@@ -17,6 +17,8 @@ class Fetcher:
         self.timeout = aiohttp.ClientTimeout(total=settings.REQUEST_TIMEOUT)
         self.retries = settings.MAX_RETRIES
         self.retry_backoff = settings.RETRY_BACKOFF
+        self.redis_url = settings.REDIS_URL
+        self.publisher = RedisPublisher(self.redis_url)
         self.metrics = {}
     
     async def fetch(self, session: aiohttp.ClientSession) -> dict | None:
@@ -38,11 +40,21 @@ class Fetcher:
             except Exception as e:
                 logger.error(f"Fetch attempt {retries + 1} failed: {e}")
                 retries += 1
-                await asyncio.sleep(self.retry_backoff * retries)
+                await asyncio.sleep(min(60, self.retry_backoff * retries))
                 
         logger.error("All fetch attempts failed")
         return None
     
     async def run(self) -> dict | None:
         async with aiohttp.ClientSession() as session:
-            return await self.fetch(session=session)
+            raw_data = await self.fetch(session)
+            if not raw_data:
+                return
+            try:
+                sensor_data = SensorData(**raw_data)
+                await self.publisher.publish(sensor_data)
+                logger.info(f"Publihed sensor data: {sensor_data}")
+            except ValidationError as ve:
+                logger.warning(f"Invalid sensor data: {ve}")
+
+            # return await self.fetch(session=session)
